@@ -19,7 +19,13 @@ from slither.core.declarations.solidity_import_placeholder import SolidityImport
 from slither.core.solidity_types.type import Type
 from slither.core.variables.top_level_variable import TopLevelVariable
 from slither.core.variables.variable import Variable
-from slither.slithir.operations import Index, OperationWithLValue, InternalCall, Operation
+from slither.slithir.operations import (
+    Index,
+    OperationWithLValue,
+    InternalCall,
+    Operation,
+    SolidityCall
+)
 from slither.slithir.utils.utils import LVALUE
 from slither.slithir.variables import (
     Constant,
@@ -422,6 +428,8 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
         read = [ir.variable_left]
     elif isinstance(ir, InternalCall) and ir.function:
         read = ir.function.return_values_ssa
+    elif isinstance(ir, SolidityCall) and ir.function == SolidityFunction("chainid()"):
+        read = [SolidityFunction("chainid()")]
     else:
         read = ir.read
     for v in read:

@@ -88,6 +88,8 @@ SOLIDITY_FUNCTIONS: Dict[str, List[str]] = {
     "balance(address)": ["uint256"],
     "code(address)": ["bytes"],
     "codehash(address)": ["bytes32"],
+    # assembly
+    "chainid()": ["uint256"],
     # Vyper
     "create_from_blueprint()": [],
     "create_minimal_proxy_to()": [],
