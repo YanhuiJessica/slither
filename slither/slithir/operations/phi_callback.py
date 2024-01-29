@@ -24,6 +24,7 @@ class PhiCallback(Phi):
         super().__init__(left_variable, nodes)
         self._call_ir = call_ir
         self._rvalues = [rvalue]
+        self._init_rvalues = self._rvalues
         self._rvalue_no_callback = rvalue
 
     @property

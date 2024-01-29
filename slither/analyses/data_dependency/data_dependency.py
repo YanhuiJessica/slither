@@ -4,7 +4,7 @@
 from collections import defaultdict
 from typing import Union, Set, Dict, TYPE_CHECKING, List
 
-from slither.core.cfg.node import Node
+from slither.core.cfg.node import Node, NodeType
 from slither.core.declarations import (
     Contract,
     Enum,
@@ -24,7 +24,8 @@ from slither.slithir.operations import (
     OperationWithLValue,
     InternalCall,
     Operation,
-    SolidityCall
+    SolidityCall,
+    PhiCallback,
 )
 from slither.slithir.utils.utils import LVALUE
 from slither.slithir.variables import (
@@ -205,6 +206,21 @@ def is_tainted_ssa(
     )
 
 
+def get_dependencies_phi_callback(
+    variable: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> Set[Variable]:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+    assert isinstance(only_unprotected, bool)
+    if only_unprotected:
+        return context.context[KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED].get(variable, set())
+    return context.context[KEY_PHI_CALLBACK_NON_SSA].get(variable, set())
+
+
 def get_dependencies(
     variable: SUPPORTED_TYPES,
     context: Context_types_API,
@@ -250,6 +266,21 @@ def get_all_dependencies(
     if only_unprotected:
         return context.context[KEY_NON_SSA_UNPROTECTED]
     return context.context[KEY_NON_SSA]
+
+
+def get_dependencies_phi_callback_ssa(
+    variable: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> Set[Variable]:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+    assert isinstance(only_unprotected, bool)
+    if only_unprotected:
+        return context.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED].get(variable, set())
+    return context.context[KEY_PHI_CALLBACK_SSA].get(variable, set())
 
 
 def get_dependencies_ssa(
@@ -309,9 +340,15 @@ def get_all_dependencies_ssa(
 KEY_SSA = "DATA_DEPENDENCY_SSA"
 KEY_NON_SSA = "DATA_DEPENDENCY"
 
+# Does not consider the impact of external calls
+KEY_PHI_CALLBACK_SSA = "DATA_DEPENDENCY_PHI_CALLBACK_SSA"
+KEY_PHI_CALLBACK_NON_SSA = "DATA_DEPENDENCY_PHI_CALLBACK"
+
 # Only for unprotected functions
 KEY_SSA_UNPROTECTED = "DATA_DEPENDENCY_SSA_UNPROTECTED"
 KEY_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_UNPROTECTED"
+KEY_PHI_CALLBACK_SSA_UNPROTECTED = "DATA_DEPENDENCY_PHI_CALLBACK_SSA_UNPROTECTED"
+KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_PHI_CALLBACK_UNPROTECTED"
 
 KEY_INPUT = "DATA_DEPENDENCY_INPUT"
 KEY_INPUT_SSA = "DATA_DEPENDENCY_INPUT_SSA"
@@ -363,13 +400,22 @@ def compute_dependency_contract(
         return
 
     contract.context[KEY_SSA] = {}
+    contract.context[KEY_PHI_CALLBACK_SSA] = {}
     contract.context[KEY_SSA_UNPROTECTED] = {}
+    contract.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED] = {}
 
     for function in contract.functions + list(contract.modifiers):
         compute_dependency_function(function)
 
         propagate_function(contract, function, KEY_SSA, KEY_NON_SSA)
+        propagate_function(contract, function, KEY_PHI_CALLBACK_SSA, KEY_PHI_CALLBACK_NON_SSA)
         propagate_function(contract, function, KEY_SSA_UNPROTECTED, KEY_NON_SSA_UNPROTECTED)
+        propagate_function(
+            contract,
+            function,
+            KEY_PHI_CALLBACK_SSA_UNPROTECTED,
+            KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED,
+        )
 
         # pylint: disable=expression-not-assigned
         if function.visibility in ["public", "external"]:
@@ -377,16 +423,20 @@ def compute_dependency_contract(
             [compilation_unit.context[KEY_INPUT_SSA].add(p) for p in function.parameters_ssa]
 
     propagate_contract(contract, KEY_SSA, KEY_NON_SSA)
+    propagate_contract(contract, KEY_PHI_CALLBACK_SSA, KEY_PHI_CALLBACK_NON_SSA)
     propagate_contract(contract, KEY_SSA_UNPROTECTED, KEY_NON_SSA_UNPROTECTED)
+    propagate_contract(
+        contract, KEY_PHI_CALLBACK_SSA_UNPROTECTED, KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED
+    )
 
 
 def propagate_function(
     contract: Contract, function: Function, context_key: str, context_key_non_ssa: str
 ) -> None:
     transitive_close_dependencies(function, context_key, context_key_non_ssa)
-    # Propage data dependency
-    data_depencencies = function.context[context_key]
-    for (key, values) in data_depencencies.items():
+    # Propagate data dependency
+    data_dependencies = function.context[context_key]
+    for key, values in data_dependencies.items():
         if not key in contract.context[context_key]:
             contract.context[context_key][key] = set(values)
         else:
@@ -421,8 +471,10 @@ def propagate_contract(contract: Contract, context_key: str, context_key_non_ssa
 def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_protected: bool) -> None:
     if not lvalue in function.context[KEY_SSA]:
         function.context[KEY_SSA][lvalue] = set()
+        function.context[KEY_PHI_CALLBACK_SSA][lvalue] = set()
         if not is_protected:
             function.context[KEY_SSA_UNPROTECTED][lvalue] = set()
+            function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED][lvalue] = set()
     read: Union[List[Union[LVALUE, SolidityVariableComposed]], List[SlithIRVariable]]
     if isinstance(ir, Index):
         read = [ir.variable_left]
@@ -435,10 +487,18 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
     for v in read:
         if not isinstance(v, Constant):
             function.context[KEY_SSA][lvalue].add(v)
+    if ir.node.type != NodeType.ENTRYPOINT:
+        for v in (ir._init_rvalues if isinstance(ir, PhiCallback) else read):
+            if not isinstance(v, Constant):
+                function.context[KEY_PHI_CALLBACK_SSA][lvalue].add(v)
     if not is_protected:
         for v in read:
             if not isinstance(v, Constant):
                 function.context[KEY_SSA_UNPROTECTED][lvalue].add(v)
+        if ir.node.type != NodeType.ENTRYPOINT:
+            for v in (ir._init_rvalues if isinstance(ir, PhiCallback) else read):
+                if not isinstance(v, Constant):
+                    function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED][lvalue].add(v)
 
 
 def compute_dependency_function(function: Function) -> None:
@@ -446,7 +506,9 @@ def compute_dependency_function(function: Function) -> None:
         return
 
     function.context[KEY_SSA] = {}
+    function.context[KEY_PHI_CALLBACK_SSA] = {}
     function.context[KEY_SSA_UNPROTECTED] = {}
+    function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED] = {}
 
     is_protected = function.is_protected()
     for node in function.nodes:
@@ -461,8 +523,14 @@ def compute_dependency_function(function: Function) -> None:
                 add_dependency(ir.lvalue, function, ir, is_protected)
 
     function.context[KEY_NON_SSA] = convert_to_non_ssa(function.context[KEY_SSA])
+    function.context[KEY_PHI_CALLBACK_NON_SSA] = convert_to_non_ssa(
+        function.context[KEY_PHI_CALLBACK_SSA]
+    )
     function.context[KEY_NON_SSA_UNPROTECTED] = convert_to_non_ssa(
         function.context[KEY_SSA_UNPROTECTED]
+    )
+    function.context[KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED] = convert_to_non_ssa(
+        function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED]
     )
 
 
