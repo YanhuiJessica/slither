@@ -479,7 +479,7 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
     if isinstance(ir, Index):
         read = [ir.variable_left]
     elif isinstance(ir, InternalCall) and ir.function:
-        read = ir.function.return_values_ssa
+        read = ir.function.return_values_ssa + ir.read
     elif isinstance(ir, SolidityCall) and ir.function == SolidityFunction("chainid()"):
         read = [SolidityFunction("chainid()")]
     else:
