@@ -279,12 +279,21 @@ def generate_ssa_irs(
             node.add_ssa_ir(new_ir)
 
             if isinstance(ir, (InternalCall, HighLevelCall, InternalDynamicCall, LowLevelCall)):
-                if isinstance(ir, LibraryCall) or (
-                    isinstance(ir, InternalCall) and (ir.function.view or ir.function.pure)
-                ):
+                if isinstance(ir, LibraryCall):
                     continue
+                elif isinstance(ir, InternalCall):
+                    if ir.function.view or ir.function.pure:
+                        continue
+                    state_vars_written = set()
+                    for v in ir.function.state_variables_written:
+                        state_vars_written.add(v.canonical_name)
                 for variable in all_state_variables_instances.values():
                     if not is_used_later(node, variable):
+                        continue
+                    if (
+                        isinstance(ir, InternalCall)
+                        and variable.canonical_name not in state_vars_written
+                    ):
                         continue
                     new_var = StateIRVariable(variable)
                     new_var.index = all_state_variables_instances[variable.canonical_name].index + 1
