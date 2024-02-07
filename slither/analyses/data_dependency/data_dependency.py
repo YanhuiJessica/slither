@@ -283,6 +283,21 @@ def get_dependencies_phi_callback_ssa(
     return context.context[KEY_PHI_CALLBACK_SSA].get(variable, set())
 
 
+def get_dependencies_internal_ssa(
+    variable: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> Set[Variable]:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+    assert isinstance(only_unprotected, bool)
+    if only_unprotected:
+        return context.context[KEY_INTERNAL_SSA_UNPROTECTED].get(variable, set())
+    return context.context[KEY_INTERNAL_SSA].get(variable, set())
+
+
 def get_dependencies_ssa(
     variable: SUPPORTED_TYPES,
     context: Context_types_API,
@@ -344,11 +359,17 @@ KEY_NON_SSA = "DATA_DEPENDENCY"
 KEY_PHI_CALLBACK_SSA = "DATA_DEPENDENCY_PHI_CALLBACK_SSA"
 KEY_PHI_CALLBACK_NON_SSA = "DATA_DEPENDENCY_PHI_CALLBACK"
 
+# Between function and internal calls
+KEY_INTERNAL_SSA = "DATA_DEPENDENCY_INTERNAL_SSA"
+KEY_INTERNAL_NON_SSA = "DATA_DEPENDENCY_INTERNAL"
+
 # Only for unprotected functions
 KEY_SSA_UNPROTECTED = "DATA_DEPENDENCY_SSA_UNPROTECTED"
 KEY_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_UNPROTECTED"
 KEY_PHI_CALLBACK_SSA_UNPROTECTED = "DATA_DEPENDENCY_PHI_CALLBACK_SSA_UNPROTECTED"
 KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_PHI_CALLBACK_UNPROTECTED"
+KEY_INTERNAL_SSA_UNPROTECTED = "DATA_DEPENDENCY_INTERNAL_SSA_UNPROTECTED"
+KEY_INTERNAL_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_INTERNAL_UNPROTECTED"
 
 KEY_INPUT = "DATA_DEPENDENCY_INPUT"
 KEY_INPUT_SSA = "DATA_DEPENDENCY_INPUT_SSA"
@@ -501,18 +522,41 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
                     function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED][lvalue].add(v)
 
 
+def _add_dependency(lvalue: Variable, function: Function, is_protected: bool, read: List) -> None:
+    if not lvalue in function.context[KEY_INTERNAL_SSA]:
+        function.context[KEY_INTERNAL_SSA][lvalue] = set()
+        if not is_protected:
+            function.context[KEY_INTERNAL_SSA_UNPROTECTED][lvalue] = set()
+    for v in read:
+        if not isinstance(v, Constant):
+            function.context[KEY_INTERNAL_SSA][lvalue].add(v)
+    if not is_protected:
+        for v in read:
+            if not isinstance(v, Constant):
+                function.context[KEY_INTERNAL_SSA_UNPROTECTED][lvalue].add(v)
+
+
 def compute_dependency_function(function: Function) -> None:
     if KEY_SSA in function.context:
         return
 
     function.context[KEY_SSA] = {}
     function.context[KEY_PHI_CALLBACK_SSA] = {}
+    function.context[KEY_INTERNAL_SSA] = {}
     function.context[KEY_SSA_UNPROTECTED] = {}
     function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED] = {}
+    function.context[KEY_INTERNAL_SSA_UNPROTECTED] = {}
 
     is_protected = function.is_protected()
     for node in function.nodes:
         for ir in node.irs_ssa:
+            if isinstance(ir, InternalCall) and not ir.function.view and not ir.function.pure:
+                entrypoint = ir.function.entry_point
+                parameters = [p.name for p in ir.function.parameters]
+                for sir in entrypoint.irs_ssa:
+                    if sir.lvalue.name in parameters:
+                        rvalue = ir.arguments[parameters.index(sir.lvalue.name)]
+                        _add_dependency(sir.lvalue, function, is_protected, [rvalue])
             if isinstance(ir, OperationWithLValue) and ir.lvalue:
                 if isinstance(ir.lvalue, LocalIRVariable) and ir.lvalue.is_storage:
                     continue
