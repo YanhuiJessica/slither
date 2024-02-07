@@ -552,11 +552,12 @@ def compute_dependency_function(function: Function) -> None:
         for ir in node.irs_ssa:
             if isinstance(ir, InternalCall) and not ir.function.view and not ir.function.pure:
                 entrypoint = ir.function.entry_point
-                parameters = [p.name for p in ir.function.parameters]
-                for sir in entrypoint.irs_ssa:
-                    if sir.lvalue.name in parameters:
-                        rvalue = ir.arguments[parameters.index(sir.lvalue.name)]
-                        _add_dependency(sir.lvalue, function, is_protected, [rvalue])
+                if entrypoint:
+                    parameters = [p.name for p in ir.function.parameters]
+                    for sir in entrypoint.irs_ssa:
+                        if sir.lvalue.name in parameters:
+                            rvalue = ir.arguments[parameters.index(sir.lvalue.name)]
+                            _add_dependency(sir.lvalue, function, is_protected, [rvalue])
             if isinstance(ir, OperationWithLValue) and ir.lvalue:
                 if isinstance(ir.lvalue, LocalIRVariable) and ir.lvalue.is_storage:
                     continue
