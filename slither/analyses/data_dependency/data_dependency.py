@@ -557,7 +557,9 @@ def compute_dependency_function(function: Function) -> None:
                     for sir in entrypoint.irs_ssa:
                         if sir.lvalue.name in parameters:
                             rvalue = ir.arguments[parameters.index(sir.lvalue.name)]
-                            _add_dependency(sir.lvalue, function, is_protected, [rvalue])
+                            if not isinstance(rvalue, list):    # May be an array
+                                rvalue = [rvalue]
+                            _add_dependency(sir.lvalue, function, is_protected, rvalue)
             if isinstance(ir, OperationWithLValue) and ir.lvalue:
                 if isinstance(ir.lvalue, LocalIRVariable) and ir.lvalue.is_storage:
                     continue
