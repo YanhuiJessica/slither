@@ -26,6 +26,8 @@ from slither.slithir.operations import (
     Operation,
     SolidityCall,
     PhiCallback,
+    Binary,
+    BinaryType,
 )
 from slither.slithir.utils.utils import LVALUE
 from slither.slithir.variables import (
@@ -96,6 +98,34 @@ def is_dependent(
     return variable in context_dict[KEY_NON_SSA] and source in context_dict[KEY_NON_SSA][variable]
 
 
+def is_dependent_implicit(
+    variable: SUPPORTED_TYPES,
+    source: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> bool:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+
+    if isinstance(variable, Constant):
+        return False
+    if variable == source:
+        return True
+    context_dict = context.context
+
+    if only_unprotected:
+        return (
+            variable in context_dict[KEY_IMPLICIT_NON_SSA_UNPROTECTED]
+            and source in context_dict[KEY_IMPLICIT_NON_SSA_UNPROTECTED][variable]
+        )
+    return (
+        variable in context_dict[KEY_IMPLICIT_NON_SSA]
+        and source in context_dict[KEY_IMPLICIT_NON_SSA][variable]
+    )
+
+
 def is_dependent_ssa(
     variable: SUPPORTED_TYPES,
     source: SUPPORTED_TYPES,
@@ -129,6 +159,32 @@ def is_dependent_ssa(
             and source in context_dict[KEY_SSA_UNPROTECTED][variable]
         )
     return variable in context_dict[KEY_SSA] and source in context_dict[KEY_SSA][variable]
+
+
+def is_dependent_implicit_ssa(
+    variable: SUPPORTED_TYPES,
+    source: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> bool:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+    context_dict = context.context
+    if isinstance(variable, Constant):
+        return False
+    if variable == source:
+        return True
+    if only_unprotected:
+        return (
+            variable in context_dict[KEY_IMPLICIT_SSA_UNPROTECTED]
+            and source in context_dict[KEY_IMPLICIT_SSA_UNPROTECTED][variable]
+        )
+    return (
+        variable in context_dict[KEY_IMPLICIT_SSA]
+        and source in context_dict[KEY_IMPLICIT_SSA][variable]
+    )
 
 
 GENERIC_TAINT = {
@@ -221,6 +277,21 @@ def get_dependencies_phi_callback(
     return context.context[KEY_PHI_CALLBACK_NON_SSA].get(variable, set())
 
 
+def get_dependencies_implicit(
+    variable: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> Set[Variable]:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+    assert isinstance(only_unprotected, bool)
+    if only_unprotected:
+        return context.context[KEY_IMPLICIT_NON_SSA_UNPROTECTED].get(variable, set())
+    return context.context[KEY_IMPLICIT_NON_SSA].get(variable, set())
+
+
 def get_dependencies(
     variable: SUPPORTED_TYPES,
     context: Context_types_API,
@@ -298,6 +369,21 @@ def get_dependencies_internal_ssa(
     return context.context[KEY_INTERNAL_SSA].get(variable, set())
 
 
+def get_dependencies_implicit_ssa(
+    variable: SUPPORTED_TYPES,
+    context: Context_types_API,
+    only_unprotected: bool = False,
+) -> Set[Variable]:
+    assert isinstance(context, (Contract, Function, Node))
+    if isinstance(context, Node):
+        func = context.function
+        context = func.contract if isinstance(func, FunctionContract) else func
+    assert isinstance(only_unprotected, bool)
+    if only_unprotected:
+        return context.context[KEY_IMPLICIT_SSA_UNPROTECTED].get(variable, set())
+    return context.context[KEY_IMPLICIT_SSA].get(variable, set())
+
+
 def get_dependencies_ssa(
     variable: SUPPORTED_TYPES,
     context: Context_types_API,
@@ -363,6 +449,10 @@ KEY_PHI_CALLBACK_NON_SSA = "DATA_DEPENDENCY_PHI_CALLBACK"
 KEY_INTERNAL_SSA = "DATA_DEPENDENCY_INTERNAL_SSA"
 KEY_INTERNAL_NON_SSA = "DATA_DEPENDENCY_INTERNAL"
 
+# Implicit transfer of control statements
+KEY_IMPLICIT_SSA = "DATA_DEPENDENCY_IMPLICIT_SSA"
+KEY_IMPLICIT_NON_SSA = "DATA_DEPENDENCY_IMPLICIT"
+
 # Only for unprotected functions
 KEY_SSA_UNPROTECTED = "DATA_DEPENDENCY_SSA_UNPROTECTED"
 KEY_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_UNPROTECTED"
@@ -370,6 +460,8 @@ KEY_PHI_CALLBACK_SSA_UNPROTECTED = "DATA_DEPENDENCY_PHI_CALLBACK_SSA_UNPROTECTED
 KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_PHI_CALLBACK_UNPROTECTED"
 KEY_INTERNAL_SSA_UNPROTECTED = "DATA_DEPENDENCY_INTERNAL_SSA_UNPROTECTED"
 KEY_INTERNAL_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_INTERNAL_UNPROTECTED"
+KEY_IMPLICIT_SSA_UNPROTECTED = "DATA_DEPENDENCY_IMPLICIT_SSA_UNPROTECTED"
+KEY_IMPLICIT_NON_SSA_UNPROTECTED = "DATA_DEPENDENCY_IMPLICIT_UNPROTECTED"
 
 KEY_INPUT = "DATA_DEPENDENCY_INPUT"
 KEY_INPUT_SSA = "DATA_DEPENDENCY_INPUT_SSA"
@@ -422,20 +514,26 @@ def compute_dependency_contract(
 
     contract.context[KEY_SSA] = {}
     contract.context[KEY_PHI_CALLBACK_SSA] = {}
+    contract.context[KEY_IMPLICIT_SSA] = {}
     contract.context[KEY_SSA_UNPROTECTED] = {}
     contract.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED] = {}
+    contract.context[KEY_IMPLICIT_SSA_UNPROTECTED] = {}
 
     for function in contract.functions + list(contract.modifiers):
         compute_dependency_function(function)
 
         propagate_function(contract, function, KEY_SSA, KEY_NON_SSA)
         propagate_function(contract, function, KEY_PHI_CALLBACK_SSA, KEY_PHI_CALLBACK_NON_SSA)
+        propagate_function(contract, function, KEY_IMPLICIT_SSA, KEY_IMPLICIT_NON_SSA)
         propagate_function(contract, function, KEY_SSA_UNPROTECTED, KEY_NON_SSA_UNPROTECTED)
         propagate_function(
             contract,
             function,
             KEY_PHI_CALLBACK_SSA_UNPROTECTED,
             KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED,
+        )
+        propagate_function(
+            contract, function, KEY_IMPLICIT_SSA_UNPROTECTED, KEY_IMPLICIT_NON_SSA_UNPROTECTED
         )
 
         # pylint: disable=expression-not-assigned
@@ -445,10 +543,12 @@ def compute_dependency_contract(
 
     propagate_contract(contract, KEY_SSA, KEY_NON_SSA)
     propagate_contract(contract, KEY_PHI_CALLBACK_SSA, KEY_PHI_CALLBACK_NON_SSA)
+    propagate_contract(contract, KEY_IMPLICIT_SSA, KEY_IMPLICIT_NON_SSA)
     propagate_contract(contract, KEY_SSA_UNPROTECTED, KEY_NON_SSA_UNPROTECTED)
     propagate_contract(
         contract, KEY_PHI_CALLBACK_SSA_UNPROTECTED, KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED
     )
+    propagate_contract(contract, KEY_IMPLICIT_SSA_UNPROTECTED, KEY_IMPLICIT_NON_SSA_UNPROTECTED)
 
 
 def propagate_function(
@@ -493,9 +593,11 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
     if not lvalue in function.context[KEY_SSA]:
         function.context[KEY_SSA][lvalue] = set()
         function.context[KEY_PHI_CALLBACK_SSA][lvalue] = set()
+        function.context[KEY_IMPLICIT_SSA][lvalue] = set()
         if not is_protected:
             function.context[KEY_SSA_UNPROTECTED][lvalue] = set()
             function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED][lvalue] = set()
+            function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue] = set()
     read: Union[List[Union[LVALUE, SolidityVariableComposed]], List[SlithIRVariable]]
     if isinstance(ir, Index) and not isinstance(lvalue, ReferenceVariable):
         read = [ir.variable_left]
@@ -508,6 +610,7 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
     for v in read:
         if not isinstance(v, Constant):
             function.context[KEY_SSA][lvalue].add(v)
+            function.context[KEY_IMPLICIT_SSA][lvalue].add(v)
     if ir.node.type != NodeType.ENTRYPOINT:
         for v in (ir._init_rvalues if isinstance(ir, PhiCallback) else read):
             if not isinstance(v, Constant):
@@ -516,10 +619,27 @@ def add_dependency(lvalue: Variable, function: Function, ir: Operation, is_prote
         for v in read:
             if not isinstance(v, Constant):
                 function.context[KEY_SSA_UNPROTECTED][lvalue].add(v)
+                function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue].add(v)
         if ir.node.type != NodeType.ENTRYPOINT:
             for v in (ir._init_rvalues if isinstance(ir, PhiCallback) else read):
                 if not isinstance(v, Constant):
                     function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED][lvalue].add(v)
+
+
+def add_implicit_dependency(
+    lvalue: Variable, function: Function, ir: Operation, is_protected: bool
+) -> None:
+    if not lvalue in function.context[KEY_IMPLICIT_SSA]:
+        function.context[KEY_IMPLICIT_SSA][lvalue] = set()
+        if not is_protected:
+            function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue] = set()
+    read: Union[List[Union[LVALUE, SolidityVariableComposed]], List[SlithIRVariable]]
+    v = ir.variable_left if lvalue == ir.variable_right else ir.variable_right
+    if not isinstance(v, Constant):
+        function.context[KEY_IMPLICIT_SSA][lvalue].add(v)
+    if not is_protected:
+        if not isinstance(v, Constant):
+            function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue].add(v)
 
 
 def _add_dependency(lvalue: Variable, function: Function, is_protected: bool, read: List) -> None:
@@ -543,9 +663,11 @@ def compute_dependency_function(function: Function) -> None:
     function.context[KEY_SSA] = {}
     function.context[KEY_PHI_CALLBACK_SSA] = {}
     function.context[KEY_INTERNAL_SSA] = {}
+    function.context[KEY_IMPLICIT_SSA] = {}
     function.context[KEY_SSA_UNPROTECTED] = {}
     function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED] = {}
     function.context[KEY_INTERNAL_SSA_UNPROTECTED] = {}
+    function.context[KEY_IMPLICIT_SSA_UNPROTECTED] = {}
 
     is_protected = function.is_protected()
     for node in function.nodes:
@@ -563,6 +685,9 @@ def compute_dependency_function(function: Function) -> None:
             if isinstance(ir, OperationWithLValue) and ir.lvalue:
                 if isinstance(ir.lvalue, LocalIRVariable) and ir.lvalue.is_storage:
                     continue
+                if isinstance(ir, Binary) and ir.type in [BinaryType.EQUAL, BinaryType.NOT_EQUAL]:
+                    add_implicit_dependency(ir.variable_left, function, ir, is_protected)
+                    add_implicit_dependency(ir.variable_right, function, ir, is_protected)
                 if isinstance(ir.lvalue, ReferenceVariable):
                     lvalue = ir.lvalue.points_to
                     if lvalue:
@@ -573,11 +698,15 @@ def compute_dependency_function(function: Function) -> None:
     function.context[KEY_PHI_CALLBACK_NON_SSA] = convert_to_non_ssa(
         function.context[KEY_PHI_CALLBACK_SSA]
     )
+    function.context[KEY_IMPLICIT_NON_SSA] = convert_to_non_ssa(function.context[KEY_IMPLICIT_SSA])
     function.context[KEY_NON_SSA_UNPROTECTED] = convert_to_non_ssa(
         function.context[KEY_SSA_UNPROTECTED]
     )
     function.context[KEY_PHI_CALLBACK_NON_SSA_UNPROTECTED] = convert_to_non_ssa(
         function.context[KEY_PHI_CALLBACK_SSA_UNPROTECTED]
+    )
+    function.context[KEY_IMPLICIT_NON_SSA_UNPROTECTED] = convert_to_non_ssa(
+        function.context[KEY_IMPLICIT_SSA_UNPROTECTED]
     )
 
 
