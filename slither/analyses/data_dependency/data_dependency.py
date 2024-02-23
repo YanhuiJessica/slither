@@ -633,13 +633,12 @@ def add_implicit_dependency(
         function.context[KEY_IMPLICIT_SSA][lvalue] = set()
         if not is_protected:
             function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue] = set()
-    read: Union[List[Union[LVALUE, SolidityVariableComposed]], List[SlithIRVariable]]
     v = ir.variable_left if lvalue == ir.variable_right else ir.variable_right
-    if not isinstance(v, Constant):
-        function.context[KEY_IMPLICIT_SSA][lvalue].add(v)
+    if isinstance(lvalue, Constant) or isinstance(v, Constant):
+        return
+    function.context[KEY_IMPLICIT_SSA][lvalue].add(v)
     if not is_protected:
-        if not isinstance(v, Constant):
-            function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue].add(v)
+        function.context[KEY_IMPLICIT_SSA_UNPROTECTED][lvalue].add(v)
 
 
 def _add_dependency(lvalue: Variable, function: Function, is_protected: bool, read: List) -> None:
